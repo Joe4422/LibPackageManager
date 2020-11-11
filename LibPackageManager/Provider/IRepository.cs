@@ -19,7 +19,7 @@ namespace LibPackageManager.Provider
     /// </summary>
     /// <typeparam name="T">The type of item provided by this repository. Must implement IRepositoryItem.</typeparam>
     public interface IRepository<T>
-        where T : IRepositoryItem
+        where T : class, IRepositoryItem
     {
         #region Properties
         /// <summary>

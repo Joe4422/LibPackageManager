@@ -11,7 +11,7 @@ namespace LibPackageManager.Database
     /// <summary>
     /// Provides an abstract database class for managing, saving, loading and fetching a list of IRepository.
     /// </summary>
-    /// <typeparam name="T"></typeparam>
+    /// <typeparam name="T">The IRepositoryItem-implementing class this database manages.</typeparam>
     public abstract class BaseDatabaseManager<T>
         where T : class, IRepositoryItem
     {

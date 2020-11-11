@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 namespace LibPackageManager.Download
 {
     /// <summary>
-    /// Base for a download manager class for a given IRepositoryItem.
+    /// Provides an abstract base class for downloading, installing, and uninstalling items.
     /// </summary>
     /// <typeparam name="T">The IRepositoryItem that this class supports downloading.</typeparam>
     public abstract class BaseDownloadManager<T>
@@ -22,11 +22,19 @@ namespace LibPackageManager.Download
         protected string installDir;
         #endregion
 
+        #region Events
+        public delegate void DownloadStartedEventHandler(object sender, DownloadToken<T> token);
+        /// <summary>
+        /// Indicates that a download has been initiated.
+        /// </summary>
+        public event DownloadStartedEventHandler DownloadStarted;
+        #endregion
+
         #region Properties
         /// <summary>
         /// Contains all items that are currently being downloaded.
         /// </summary>
-        public List<T> DownloadsInProgress { get; } = new List<T>();
+        public List<DownloadToken<T>> DownloadsInProgress { get; } = new();
         #endregion
 
         #region Constructors
@@ -82,13 +90,20 @@ namespace LibPackageManager.Download
         /// <exception cref="ArgumentNullException"
         protected async Task<bool> GetSingleItemAsync(T item)
         {
+            // Check item is not null
             if (item is null) throw new ArgumentNullException(nameof(item));
 
+            // Check for conditions that could cause the download to be unnecessary
             if (item.IsDownloaded) return true;
             else if (item.DownloadUrl == null) return false;
-            else if (DownloadsInProgress.Contains(item)) return true;
+            else if (DownloadsInProgress.Select(x => x.ItemToDownload).Contains(item)) return true;
 
-            DownloadsInProgress.Add(item);
+            using WebClient client = new();
+
+            // Set up the download token
+            DownloadToken<T> token = new DownloadToken<T>(item, client);
+            DownloadsInProgress.Add(token);
+            DownloadStarted.Invoke(this, token);
 
             string downloadPath = $"{downloadDir}/{Path.GetFileName(item.DownloadUrl)}";
 
@@ -104,16 +119,13 @@ namespace LibPackageManager.Download
             }
 
             // Download file
-            using (WebClient client = new WebClient())
+            try
             {
-                try
-                {
-                    await client.DownloadFileTaskAsync(item.DownloadUrl, downloadPath);
-                }
-                catch (Exception)
-                {
-                    return false;
-                }
+                await client.DownloadFileTaskAsync(item.DownloadUrl, downloadPath);
+            }
+            catch (Exception)
+            {
+                return false;
             }
 
             // Install item from file
@@ -122,7 +134,7 @@ namespace LibPackageManager.Download
             // Mark item as downloaded
             item.InstallPath = $"{installDir}/{item.Id}";
 
-            DownloadsInProgress.Remove(item);
+            DownloadsInProgress.Remove(token);
 
             // Remove downloaded file now we've installed its content
             File.Delete(downloadPath);
@@ -150,6 +162,52 @@ namespace LibPackageManager.Download
         /// <param name="item">The item to install.</param>
         /// <param name="downloadedFilePath">Path to the item's downloaded content.</param>
         protected abstract Task InstallItemAsync(T item, string downloadedFilePath);
+        #endregion
+    }
+
+    public class DownloadToken<T>
+        where T : class, IRepositoryItem
+    {
+        #region Properties
+        /// <summary>
+        /// The item currently being downloaded.
+        /// </summary>
+        public T ItemToDownload { get; }
+
+        /// <summary>
+        /// The download progress percentage, from 0% to 100%.
+        /// </summary>
+        public int ProgressPercentage { get; protected set; }
+
+        /// <summary>
+        /// Whether the download has finished.
+        /// </summary>
+        public bool IsCompleted => ProgressPercentage == 100;
+        #endregion
+
+        #region Constructors
+        /// <summary>
+        /// Creates a new DownloadToken.
+        /// </summary>
+        /// <param name="item">The item that is being downloaded.</param>
+        /// <param name="downloadClient">The WebClient used to download the item.</param>
+        public DownloadToken(T item, WebClient downloadClient)
+        {
+            ItemToDownload = item ?? throw new ArgumentNullException(nameof(item));
+            if (downloadClient is null) throw new ArgumentNullException(nameof(item));
+
+            downloadClient.DownloadProgressChanged += DownloadProgressChangedHandler;
+        }
+        #endregion
+
+        #region Methods
+        /// <summary>
+        /// Updates the progress percentage.
+        /// </summary>
+        private void DownloadProgressChangedHandler(object sender, DownloadProgressChangedEventArgs e)
+        {
+            ProgressPercentage = e.ProgressPercentage;
+        }
         #endregion
     }
 }
