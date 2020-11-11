@@ -1,12 +1,13 @@
-﻿using LibPackageManager.Provider;
+﻿using LibPackageManager.Repositories;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace LibPackageManager.Database
+namespace LibPackageManager.Managers
 {
     /// <summary>
     /// Provides an abstract database class for managing, saving, loading and fetching a list of IRepository.
@@ -188,7 +189,11 @@ namespace LibPackageManager.Database
         /// </summary>
         protected async Task SerialiseDatabaseAsync()
         {
-            await Task.Run(() => File.WriteAllText(dbFilePath, JsonConvert.SerializeObject(Items, Formatting.Indented)));
+            JsonSerializer serializer = new();
+            serializer.Converters.Add(new DependenciesToKeyListJsonConverter());
+            serializer.Formatting = Formatting.Indented;
+            
+            await Task.Run(() => serializer.Serialize(new JsonTextWriter(new StreamWriter(dbFilePath)), Items));
         }
 
         /// <summary>
@@ -196,10 +201,59 @@ namespace LibPackageManager.Database
         /// </summary>
         protected async Task DeserialiseDatabaseAsync()
         {
-            Items = await Task.Run(() => JsonConvert.DeserializeObject<List<T>>(File.ReadAllText(dbFilePath)));
+            JsonSerializer serializer = new();
+            serializer.Converters.Add(new DependenciesToKeyListJsonConverter());
+            serializer.Formatting = Formatting.Indented;
+
+            Items = await Task.Run(() => serializer.Deserialize<List<T>>(new JsonTextReader(new StreamReader(dbFilePath))));
 
             PopulateDependencies();
         }
         #endregion
+
+        /// <summary>
+        /// Used to convert dependencies into just their IDs (so we don't get any duplication)
+        /// </summary>
+        protected class DependenciesToKeyListJsonConverter : JsonConverter
+        {
+            public override bool CanConvert(Type objectType)
+            {
+                return typeof(IDictionary<string, IDependentRepositoryItem>).IsAssignableFrom(objectType);
+            }
+
+            public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
+            {
+
+                if (reader.TokenType == JsonToken.StartArray)
+                {
+                    Dictionary<string, IDependentRepositoryItem> output = new();
+                    JToken token = JToken.Load(reader);
+
+                    List<string> items = token.ToObject<List<string>>();
+
+                    items.ForEach(x => output[x] = null);
+
+                    return output;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+
+            public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
+            {
+                if (value is IDictionary<string, IDependentRepositoryItem> dict)
+                {
+                    JArray array = new JArray(dict.Keys);
+
+                    array.WriteTo(writer);
+                }
+                else
+                {
+                    throw new ArgumentException("value was not IDictionary<string, IDependentRepositoryItem>.");
+                }
+            }
+        }
     }
 }

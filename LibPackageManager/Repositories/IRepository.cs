@@ -1,19 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LibPackageManager.Provider
+namespace LibPackageManager.Repositories
 {
-    /// <summary>
-    /// Indicates whether a repository's items are fetched from a local or remote source.
-    /// </summary>
-    public enum RepositoryItemSource
-    {
-        Local,
-        Remote
-    }
-
     /// <summary>
     /// Defines a repository of items that can be refreshed and queried.
     /// </summary>
@@ -23,11 +15,6 @@ namespace LibPackageManager.Provider
     {
         #region Properties
         /// <summary>
-        /// Defines the source of the repository's items.
-        /// </summary>
-        RepositoryItemSource ItemSource { get; }
-
-        /// <summary>
         /// Contains all items provided by the repository.
         /// </summary>
         List<T> Items { get; }
@@ -35,16 +22,29 @@ namespace LibPackageManager.Provider
 
         #region Methods
         /// <summary>
-        /// Refreshes the data provided by the repository.
-        /// </summary>
-        Task RefreshAsync();
-
-        /// <summary>
         /// Allows fetching a repository item by its ID.
         /// </summary>
         /// <param name="id">The item's ID.</param>
         /// <returns>The relevant item, or null if none is found.</returns>
-        T this[string id] { get; }
+        T this[string id]
+        {
+            get
+            {
+                try
+                {
+                    return Items.First(x => x.Id == id);
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Refreshes the data provided by the repository.
+        /// </summary>
+        Task RefreshAsync();
         #endregion
     }
 }

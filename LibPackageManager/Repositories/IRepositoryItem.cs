@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace LibPackageManager.Provider
+namespace LibPackageManager.Repositories
 {
     /// <summary>
     /// An item provided by a repository.

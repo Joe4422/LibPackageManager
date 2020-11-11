@@ -1,5 +1,4 @@
-﻿using LibPackageManager.Database;
-using LibPackageManager.Provider;
+﻿using LibPackageManager.Repositories;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -8,7 +7,7 @@ using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace LibPackageManager.Download
+namespace LibPackageManager.Managers
 {
     /// <summary>
     /// Provides an abstract base class for downloading, installing, and uninstalling items.
