@@ -17,7 +17,6 @@ namespace LibPackageManager.Managers
         where T : class, IRepositoryItem
     {
         #region Variables
-        protected string dbFilePath;
         protected List<IRepository<T>> repositories;
         #endregion
 
@@ -37,12 +36,10 @@ namespace LibPackageManager.Managers
         /// <summary>
         /// Creates a new BaseDatabaseManager using the specified database file and repositories.
         /// </summary>
-        /// <param name="dbFilePath">Path of the database file.</param>
         /// <param name="repositories">Providers to read item data from.</param>
-        public BaseDatabaseManager(string dbFilePath, List<IRepository<T>> repositories)
+        public BaseDatabaseManager(List<IRepository<T>> repositories)
         {
             // Initialise and perform null argument check
-            this.dbFilePath = dbFilePath ?? throw new ArgumentNullException(nameof(dbFilePath));
             this.repositories = repositories ?? throw new ArgumentNullException(nameof(repositories));
         }
         #endregion
@@ -69,31 +66,6 @@ namespace LibPackageManager.Managers
         }
 
         /// <summary>
-        /// Performs an initial load of the database, either from the database file or by refreshing provider data.
-        /// </summary>
-        public async Task LoadDatabaseAsync()
-        {
-            if (!File.Exists(dbFilePath))
-            {
-                await RefreshDatabaseAsync();
-            }
-            else
-            {
-                await DeserialiseDatabaseAsync();
-            }
-
-            IsLoaded = true;
-        }
-
-        /// <summary>
-        /// Saves the database to the database file.
-        /// </summary>
-        public async Task SaveDatabaseAsync()
-        {
-            await SerialiseDatabaseAsync();
-        }
-
-        /// <summary>
         /// Refreshes the data in Items by refreshing data in each provider and merging.
         /// </summary>
         public async Task RefreshDatabaseAsync()
@@ -114,8 +86,8 @@ namespace LibPackageManager.Managers
             // Populate dependency list
             PopulateDependencies();
 
-            // Serialise resulting list
-            await SerialiseDatabaseAsync();
+            // Sort by ID
+            Items.Sort((a, b) => a.Id.CompareTo(b.Id));
         }
 
         /// <summary>
@@ -168,92 +140,25 @@ namespace LibPackageManager.Managers
         /// </summary>
         protected void PopulateDependencies()
         {
-            if (typeof(IDependentRepositoryItem).IsAssignableFrom(typeof(T)))
+            foreach (IRepositoryItem item in Items.ToList())
             {
-                List<IDependentRepositoryItem> dependentItems = Items.Cast<IDependentRepositoryItem>().ToList();
-                foreach (IDependentRepositoryItem item in dependentItems)
-                {
-                    if (item.Dependencies is null) continue;
-                    List<string> keys = item.Dependencies.Keys.ToList();
+                List<string> keys = item.Dependencies.Keys.ToList();
 
-                    foreach (string key in keys)
+                foreach (string key in keys)
+                {
+                    T value = this[key];
+
+                    if (value is null)
                     {
-                        item.Dependencies[key] = this[key] as IDependentRepositoryItem;
+                        Items.Add(CreateUnknownDependency(key));
                     }
+
+                    item.Dependencies[key] = this[key];
                 }
             }
         }
 
-        /// <summary>
-        /// Serialises the database into a JSON file.
-        /// </summary>
-        protected async Task SerialiseDatabaseAsync()
-        {
-            JsonSerializer serializer = new();
-            serializer.Converters.Add(new DependenciesToKeyListJsonConverter());
-            serializer.Formatting = Formatting.Indented;
-            
-            await Task.Run(() => serializer.Serialize(new JsonTextWriter(new StreamWriter(dbFilePath)), Items));
-        }
-
-        /// <summary>
-        /// Deserialises the database from a JSON file and stores the result in Items.
-        /// </summary>
-        protected async Task DeserialiseDatabaseAsync()
-        {
-            JsonSerializer serializer = new();
-            serializer.Converters.Add(new DependenciesToKeyListJsonConverter());
-            serializer.Formatting = Formatting.Indented;
-
-            Items = await Task.Run(() => serializer.Deserialize<List<T>>(new JsonTextReader(new StreamReader(dbFilePath))));
-
-            PopulateDependencies();
-        }
+        protected abstract T CreateUnknownDependency(string id);
         #endregion
-
-        /// <summary>
-        /// Used to convert dependencies into just their IDs (so we don't get any duplication)
-        /// </summary>
-        protected class DependenciesToKeyListJsonConverter : JsonConverter
-        {
-            public override bool CanConvert(Type objectType)
-            {
-                return typeof(IDictionary<string, IDependentRepositoryItem>).IsAssignableFrom(objectType);
-            }
-
-            public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
-            {
-
-                if (reader.TokenType == JsonToken.StartArray)
-                {
-                    Dictionary<string, IDependentRepositoryItem> output = new();
-                    JToken token = JToken.Load(reader);
-
-                    List<string> items = token.ToObject<List<string>>();
-
-                    items.ForEach(x => output[x] = null);
-
-                    return output;
-                }
-                else
-                {
-                    return null;
-                }
-            }
-
-            public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
-            {
-                if (value is IDictionary<string, IDependentRepositoryItem> dict)
-                {
-                    JArray array = new JArray(dict.Keys);
-
-                    array.WriteTo(writer);
-                }
-                else
-                {
-                    throw new ArgumentException("value was not IDictionary<string, IDependentRepositoryItem>.");
-                }
-            }
-        }
     }
 }

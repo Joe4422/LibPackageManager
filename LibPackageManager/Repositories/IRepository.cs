@@ -6,6 +6,12 @@ using System.Threading.Tasks;
 
 namespace LibPackageManager.Repositories
 {
+    public enum RepositoryDataSource
+    {
+        Local,
+        Remote
+    }
+
     /// <summary>
     /// Defines a repository of items that can be refreshed and queried.
     /// </summary>
@@ -14,6 +20,11 @@ namespace LibPackageManager.Repositories
         where T : class, IRepositoryItem
     {
         #region Properties
+        /// <summary>
+        /// Determines the origin of the repository's data.
+        /// </summary>
+        RepositoryDataSource DataSource { get; }
+
         /// <summary>
         /// Contains all items provided by the repository.
         /// </summary>

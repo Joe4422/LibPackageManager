@@ -1,6 +1,8 @@
 ﻿using LibPackageManager.Repositories;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -14,26 +16,27 @@ namespace LibPackageManager.Managers
     /// </summary>
     /// <typeparam name="T">The IRepositoryItem that this class supports downloading.</typeparam>
     public abstract class BaseDownloadManager<T>
-        where T : class, IRepositoryItem
+        where T : IRepositoryItem
     {
         #region Variables
         protected string downloadDir;
         protected string installDir;
+        protected WebClient client = new();
         #endregion
 
         #region Events
-        public delegate void DownloadStartedEventHandler(object sender, DownloadToken<T> token);
+        public delegate void DownloadStartedEventHandler(object sender, AcquireItemJob<T> job);
         /// <summary>
         /// Indicates that a download has been initiated.
         /// </summary>
-        public event DownloadStartedEventHandler DownloadStarted;
+        public event DownloadStartedEventHandler DownloadJobStarted;
         #endregion
 
         #region Properties
         /// <summary>
         /// Contains all items that are currently being downloaded.
         /// </summary>
-        public List<DownloadToken<T>> DownloadsInProgress { get; } = new();
+        public List<AcquireItemJob<T>> DownloadsInProgress { get; } = new();
         #endregion
 
         #region Constructors
@@ -54,92 +57,119 @@ namespace LibPackageManager.Managers
         /// Downloads and installs an item and its dependencies.
         /// </summary>
         /// <param name="item">The item to download.</param>
-        /// <returns>True if the operation succeeded, false otherwise.</returns>
-        public async Task<bool> GetItemAsync(T item)
+        /// <returns>The DownloadJob representing the item.</returns>
+        public async Task<AcquireItemJob<T>> GetItemAsync(T item)
         {
             // Check item is not null
             if (item is null) throw new ArgumentNullException(nameof(item));
 
-            // Create download task list and start downloading item
-            List<Task<bool>> itemDownloadTasks = new()
-            {
-                GetSingleItemAsync(item)
-            };
+            // Create download job
+            AcquireItemJob<T> job = new AcquireItemJob<T>(item);
+            DownloadsInProgress.Add(job);
 
-            // Check if this item has dependencies
-            if (item is IDependentRepositoryItem depItem)
+            // Signal that download has started
+            DownloadJobStarted?.Invoke(this, job);
+
+            // Download item and dependencies recursively and sequentially
+            await DownloadItemAsync(item);
+
+            // Install items simultaneously
+            Dictionary<T, Task<bool>> installTasks = new();
+            foreach (T dItem in job.ItemsToAcquire)
             {
-                // Start each dependency's download and add it to the download list
-                foreach (string key in depItem.Dependencies.Keys)
+                if (dItem.Token.State == ProgressToken.ProgressState.Downloaded)
                 {
-                    itemDownloadTasks.Add(GetItemAsync(depItem.Dependencies[key] as T));
+                    dItem.Token.State = ProgressToken.ProgressState.InstallInProgress;
+                    installTasks.Add(dItem, InstallItemAsync(dItem));
+                }
+            }
+            await Task.WhenAll(installTasks.Values);
+
+            // Check install task results
+            foreach (var kvp in installTasks)
+            {
+                if (kvp.Value.Result)
+                {
+                    kvp.Key.Token.State = ProgressToken.ProgressState.Installed;
+                }
+                else
+                {
+                    kvp.Key.Token.State = ProgressToken.ProgressState.Failed;
                 }
             }
 
-            // Wait until all tasks are completed
-            await Task.WhenAll(itemDownloadTasks);
+            // Clean up downloads
+            foreach (T dItem in job.ItemsToAcquire)
+            {
+                string downloadPath = $"{downloadDir}/{Path.GetFileName(dItem.DownloadUrl)}";
 
-            return !itemDownloadTasks.Select(x => x.Result).Contains(false);
+                if (File.Exists(downloadPath))
+                {
+                    File.Delete(downloadPath);
+                }
+            }
+
+            return job;
         }
 
-        /// <summary>
-        /// Downloads and installs an item.
-        /// </summary>
-        /// <param name="item">The item to download and install.</param>
-        /// <exception cref="ArgumentNullException"
-        protected async Task<bool> GetSingleItemAsync(T item)
+        protected async Task DownloadItemAsync(T item)
         {
-            // Check item is not null
+            // Check for anything that would mean we wouldn't need to download the item
             if (item is null) throw new ArgumentNullException(nameof(item));
+            if (item.Token.State is not ProgressToken.ProgressState.NotStarted or ProgressToken.ProgressState.Failed) return;
+            if (item.DownloadUrl is null) throw new ArgumentException(nameof(item.DownloadUrl));
 
-            // Check for conditions that could cause the download to be unnecessary
-            if (item.IsDownloaded) return true;
-            else if (item.DownloadUrl == null) return false;
-            else if (DownloadsInProgress.Select(x => x.ItemToDownload).Contains(item)) return true;
+            // Set token state to DownloadInProgress
+            item.Token.State = ProgressToken.ProgressState.DownloadInProgress;
 
-            using WebClient client = new();
+            // Download dependencies
+            foreach (T dependency in item.Dependencies.Values)
+            {
+                await DownloadItemAsync(dependency);
+            }
 
-            // Set up the download token
-            DownloadToken<T> token = new DownloadToken<T>(item, client);
-            DownloadsInProgress.Add(token);
-            DownloadStarted.Invoke(this, token);
-
+            // Get download path
             string downloadPath = $"{downloadDir}/{Path.GetFileName(item.DownloadUrl)}";
 
-            // Ensure directories exist by creating them
-            try
+            // Ensure download directory exists
+            if (!Directory.Exists(downloadDir))
             {
-                Directory.CreateDirectory(downloadDir);
-                Directory.CreateDirectory(installDir);
-            }
-            catch (Exception)
-            {
-                return false;
+                try
+                {
+                    Directory.CreateDirectory(downloadDir);
+                }
+                catch (Exception)
+                {
+                    item.Token.State = ProgressToken.ProgressState.Failed;
+                    return;
+                }
             }
 
-            // Download file
+            // Set token's client for progress updating
+            item.Token.SetDownloadClient(client);
+
+            // Attempt to download item
             try
             {
                 await client.DownloadFileTaskAsync(item.DownloadUrl, downloadPath);
+                item.Token.State = ProgressToken.ProgressState.Downloaded;
             }
             catch (Exception)
             {
-                return false;
+                try
+                {
+                    File.Delete(downloadPath);
+                }
+                catch (Exception) { }
+                item.Token.State = ProgressToken.ProgressState.Failed;
             }
-
-            // Install item from file
-            await InstallItemAsync(item, downloadPath);
-
-            // Mark item as downloaded
-            item.InstallPath = $"{installDir}/{item.Id}";
-
-            DownloadsInProgress.Remove(token);
-
-            // Remove downloaded file now we've installed its content
-            File.Delete(downloadPath);
-
-            return true;
         }
+
+        /// <summary>
+        /// Installs an item to the specified directory.
+        /// </summary>
+        /// <param name="token">The token representing the item to install.</param>
+        protected abstract Task<bool> InstallItemAsync(T item);
 
         /// <summary>
         /// Uninstalls an item.
@@ -149,63 +179,71 @@ namespace LibPackageManager.Managers
         {
             if (item is null) throw new ArgumentNullException(nameof(item));
 
-            if (!item.IsDownloaded) return;
+            if (item.Token.State != ProgressToken.ProgressState.Installed) return;
             if (!Directory.Exists($"{installDir}/{item.Id}")) return;
             await Task.Run(() => Directory.Delete($"{installDir}/{item.Id}", true));
-            item.InstallPath = null;
         }
-
-        /// <summary>
-        /// Installs an item to the specified directory.
-        /// </summary>
-        /// <param name="item">The item to install.</param>
-        /// <param name="downloadedFilePath">Path to the item's downloaded content.</param>
-        protected abstract Task InstallItemAsync(T item, string downloadedFilePath);
         #endregion
     }
 
-    public class DownloadToken<T>
-        where T : class, IRepositoryItem
+    public class AcquireItemJob<T> : IDisposable
+        where T : IRepositoryItem
     {
         #region Properties
         /// <summary>
-        /// The item currently being downloaded.
+        /// The item to be downloaded.
         /// </summary>
-        public T ItemToDownload { get; }
-
+        public T MainItem { get; }
         /// <summary>
-        /// The download progress percentage, from 0% to 100%.
+        /// Items to be downloaded and installed, including MainItem and all its dependencies.
         /// </summary>
-        public int ProgressPercentage { get; protected set; }
-
-        /// <summary>
-        /// Whether the download has finished.
-        /// </summary>
-        public bool IsCompleted => ProgressPercentage == 100;
+        public List<T> ItemsToAcquire { get; } = new();
         #endregion
 
         #region Constructors
-        /// <summary>
-        /// Creates a new DownloadToken.
-        /// </summary>
-        /// <param name="item">The item that is being downloaded.</param>
-        /// <param name="downloadClient">The WebClient used to download the item.</param>
-        public DownloadToken(T item, WebClient downloadClient)
+        public AcquireItemJob(T item)
         {
-            ItemToDownload = item ?? throw new ArgumentNullException(nameof(item));
-            if (downloadClient is null) throw new ArgumentNullException(nameof(item));
+            MainItem = item ?? throw new ArgumentNullException(nameof(item));
 
-            downloadClient.DownloadProgressChanged += DownloadProgressChangedHandler;
+            // Get list of dependencies
+            if (item.Dependencies != null)
+            {
+                List<T> dependencies = new();
+                GetDependencies(item, ref dependencies);
+
+                foreach (T dependency in dependencies)
+                {
+                    if (dependency.Token.State == ProgressToken.ProgressState.Installed) continue;
+                    ItemsToAcquire.Add(dependency);
+                }
+            }
+            else
+            {
+                ItemsToAcquire.Add(item);
+            }
         }
         #endregion
 
         #region Methods
-        /// <summary>
-        /// Updates the progress percentage.
-        /// </summary>
-        private void DownloadProgressChangedHandler(object sender, DownloadProgressChangedEventArgs e)
+        protected void GetDependencies(T item, ref List<T> dependencies)
         {
-            ProgressPercentage = e.ProgressPercentage;
+            if (!dependencies.Contains(item))
+            {
+                dependencies.Add(item);
+
+                if (item.Dependencies != null)
+                {
+                    foreach (var kvp in item.Dependencies)
+                    {
+                        GetDependencies((T)kvp.Value, ref dependencies);
+                    }
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            GC.SuppressFinalize(this);
         }
         #endregion
     }
